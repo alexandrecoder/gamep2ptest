@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jogo P2P Multiplayer com Three.js</title>
+    <!-- Tailwind CSS para estilização -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Three.js para renderização 3D -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            overflow: hidden; /* Evita barras de rolagem */
+        }
+        #game-canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        .overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Permite clicar através dos elementos */
+        }
+        .controls {
+            pointer-events: all; /* Permite interação com os controles */
+        }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body class="bg-gray-900 text-white">
+
+    <!-- Canvas para o jogo Three.js -->
+    <canvas id="game-canvas"></canvas>
+
+    <!-- Overlay com UI de conexão e informações -->
+    <div class="overlay flex flex-col items-center justify-between p-4 md:p-8">
+        <!-- Título e Instruções de Movimento -->
+        <div class="text-center bg-black bg-opacity-50 p-4 rounded-lg">
+            <h1 class="text-2xl md:text-3xl font-bold">Jogo P2P com Three.js & WebRTC</h1>
+            <p class="text-sm md:text-base text-gray-300 mt-2">Use as teclas W, A, S, D para mover seu cubo.</p>
+        </div>
+
+        <!-- Painel de Controle P2P -->
+        <div class="controls w-full max-w-2xl bg-gray-800 bg-opacity-80 backdrop-blur-sm p-4 md:p-6 rounded-xl shadow-2xl border border-gray-700">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-bold">Controle de Conexão P2P</h2>
+                <div class="flex items-center space-x-2">
+                    <span class="text-sm font-medium">Status:</span>
+                    <span id="status" class="px-3 py-1 text-sm font-semibold rounded-full bg-red-500 text-white">Desconectado</span>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <!-- Coluna da Esquerda: Sua Oferta/Resposta -->
+                <div>
+                    <label for="local-offer" class="block text-sm font-medium text-gray-300 mb-1">Sua Oferta / Resposta:</label>
+                    <textarea id="local-offer" rows="4" class="w-full p-2 bg-gray-900 border border-gray-600 rounded-md text-xs text-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500" readonly placeholder="Clique em 'Criar Oferta' para gerar..."></textarea>
+                    <button id="create-offer-btn" class="mt-2 w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300">
+                        Criar Oferta
+                    </button>
+                </div>
+
+                <!-- Coluna da Direita: Oferta/Resposta do Outro Jogador -->
+                <div>
+                    <label for="remote-offer" class="block text-sm font-medium text-gray-300 mb-1">Oferta / Resposta do Outro Jogador:</label>
+                    <textarea id="remote-offer" rows="4" class="w-full p-2 bg-gray-700 border border-gray-500 rounded-md text-xs text-gray-200 focus:ring-2 focus:ring-green-500 focus:border-green-500" placeholder="Cole a oferta ou resposta do outro jogador aqui..."></textarea>
+                    <button id="submit-offer-btn" class="mt-2 w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300">
+                        Enviar Oferta / Resposta
+                    </button>
+                </div>
+            </div>
+            <p class="text-xs text-gray-400 mt-4 text-center">
+                <strong>Como conectar:</strong> 1. Um jogador clica em 'Criar Oferta'. 2. Copie o texto de 'Sua Oferta'. 3. Cole no campo 'Oferta do Outro Jogador' na tela do outro jogador e clique em 'Enviar'. 4. Copie a 'Resposta' gerada e cole de volta na tela do primeiro jogador e clique em 'Enviar'.
+            </p>
+        </div>
+    </div>
+
+    <script type="module">
+        // --- CONFIGURAÇÃO THREE.JS ---
+        let scene, camera, renderer, player, peer, plane;
+        const keys = { w: false, a: false, s: false, d: false };
+        const moveSpeed = 0.1;
+
+        function initThree() {
+            // Cena
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111827); // Cor de fundo do body
+
+            // Câmera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 5, 10);
+            camera.lookAt(0, 0, 0);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('game-canvas'), antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+
+            // Luzes
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 10, 7.5);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+
+            // Chão
+            const planeGeometry = new THREE.PlaneGeometry(20, 20);
+            const planeMaterial = new THREE.MeshStandardMaterial({ color: 0x4B5563 }); // gray-600
+            plane = new THREE.Mesh(planeGeometry, planeMaterial);
+            plane.rotation.x = -Math.PI / 2;
+            plane.receiveShadow = true;
+            scene.add(plane);
+
+            // Jogador Local (Azul)
+            const playerGeometry = new THREE.BoxGeometry(1, 1, 1);
+            const playerMaterial = new THREE.MeshStandardMaterial({ color: 0x3B82F6 }); // blue-500
+            player = new THREE.Mesh(playerGeometry, playerMaterial);
+            player.position.y = 0.5;
+            player.position.x = -2;
+            player.castShadow = true;
+            scene.add(player);
+
+            // Jogador Remoto (Verde)
+            const peerGeometry = new THREE.BoxGeometry(1, 1, 1);
+            const peerMaterial = new THREE.MeshStandardMaterial({ color: 0x22C55E }); // green-500
+            peer = new THREE.Mesh(peerGeometry, peerMaterial);
+            peer.position.y = 0.5;
+            peer.position.x = 2;
+            peer.castShadow = true;
+            scene.add(peer);
+
+            // Listeners de eventos
+            window.addEventListener('resize', onWindowResize, false);
+            window.addEventListener('keydown', onKeyDown, false);
+            window.addEventListener('keyup', onKeyUp, false);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function onKeyDown(event) {
+            if (keys[event.key.toLowerCase()] !== undefined) {
+                keys[event.key.toLowerCase()] = true;
+            }
+        }
+
+        function onKeyUp(event) {
+            if (keys[event.key.toLowerCase()] !== undefined) {
+                keys[event.key.toLowerCase()] = false;
+            }
+        }
+
+        function updatePlayerPosition() {
+            const oldPosition = player.position.clone();
+            if (keys.w) player.position.z -= moveSpeed;
+            if (keys.s) player.position.z += moveSpeed;
+            if (keys.a) player.position.x -= moveSpeed;
+            if (keys.d) player.position.x += moveSpeed;
+
+            // Envia a posição se mudou e o canal de dados está aberto
+            if (!player.position.equals(oldPosition) && dataChannel && dataChannel.readyState === 'open') {
+                const positionData = {
+                    x: player.position.x,
+                    y: player.position.y,
+                    z: player.position.z,
+                };
+                dataChannel.send(JSON.stringify(positionData));
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            updatePlayerPosition();
+            renderer.render(scene, camera);
+        }
+
+        // --- CONFIGURAÇÃO WEBRTC ---
+        let peerConnection;
+        let dataChannel;
+        const statusElement = document.getElementById('status');
+
+        // Servidores STUN públicos do Google para ajudar a atravessar NATs
+        const configuration = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
+
+        function initP2P() {
+            peerConnection = new RTCPeerConnection(configuration);
+
+            // Handler para quando o outro peer abre um canal de dados
+            peerConnection.ondatachannel = (event) => {
+                dataChannel = event.channel;
+                setupDataChannel();
+            };
+            
+            // Handler para candidatos ICE
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    // Em uma aplicação real, isso seria enviado para o outro peer através de um servidor de sinalização.
+                    // Para este exemplo manual, o SDP gerado já conterá os candidatos.
+                    // Atrasamos a exibição da oferta para garantir que os candidatos sejam coletados.
+                    setTimeout(() => {
+                        document.getElementById('local-offer').value = JSON.stringify(peerConnection.localDescription);
+                    }, 500);
+                }
+            };
+
+            // Handlers dos botões
+            document.getElementById('create-offer-btn').addEventListener('click', createOffer);
+            document.getElementById('submit-offer-btn').addEventListener('click', handleRemoteOffer);
+        }
+
+        function setupDataChannel() {
+            dataChannel.onopen = () => {
+                console.log('Canal de dados aberto!');
+                statusElement.textContent = 'Conectado';
+                statusElement.classList.remove('bg-red-500', 'bg-yellow-500');
+                statusElement.classList.add('bg-green-500');
+            };
+
+            dataChannel.onclose = () => {
+                console.log('Canal de dados fechado.');
+                statusElement.textContent = 'Desconectado';
+                statusElement.classList.remove('bg-green-500', 'bg-yellow-500');
+                statusElement.classList.add('bg-red-500');
+            };
+
+            dataChannel.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    // Atualiza a posição do jogador remoto
+                    if (data.x !== undefined && data.y !== undefined && data.z !== undefined) {
+                        peer.position.set(data.x, data.y, data.z);
+                    }
+                } catch (error) {
+                    console.error("Erro ao processar mensagem recebida:", error);
+                }
+            };
+        }
+
+        async function createOffer() {
+            // O iniciador da chamada cria o canal de dados
+            dataChannel = peerConnection.createDataChannel('gameData');
+            setupDataChannel();
+
+            try {
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                statusElement.textContent = 'Aguardando...';
+                statusElement.classList.remove('bg-red-500', 'bg-green-500');
+                statusElement.classList.add('bg-yellow-500');
+            } catch (error) {
+                console.error('Erro ao criar oferta:', error);
+            }
+        }
+
+        async function handleRemoteOffer() {
+            const remoteOfferText = document.getElementById('remote-offer').value;
+            if (!remoteOfferText) {
+                alert('Por favor, cole a oferta ou resposta do outro jogador.');
+                return;
+            }
+
+            try {
+                const remoteDesc = JSON.parse(remoteOfferText);
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(remoteDesc));
+
+                // Se for uma oferta, crie uma resposta
+                if (remoteDesc.type === 'offer') {
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
+                }
+
+                document.getElementById('remote-offer').value = ''; // Limpa o campo
+            } catch (error) {
+                console.error('Erro ao processar oferta/resposta remota:', error);
+                alert('A oferta/resposta fornecida é inválida. Verifique o texto copiado.');
+            }
+        }
+
+        // --- INICIALIZAÇÃO ---
+        initThree();
+        initP2P();
+        animate();
+
+    </script>
+</body>
+</html>
